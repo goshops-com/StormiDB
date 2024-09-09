@@ -43,6 +43,7 @@ class AzureBlobStorage {
     if (!id) {
       id = ulid();
     }
+    data.id = id;
     const containerClient = await this.getContainerClient(collection);
     const blobClient = containerClient.getBlockBlobClient(id);
     await blobClient.upload(JSON.stringify(data), JSON.stringify(data).length);

@@ -1,0 +1,15 @@
+{
+  "name": "stormidb",
+  "version": "1.0.3",
+  "description": "StormiDB is a lightweight, document-oriented database library that uses cloud object storage (Azure Blob Storage and S3-compatible) as its backend. It's designed for simplicity, scalability, and resilience.",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@azure/storage-blob": "^12.24.0",
+    "ulid": "^2.3.0"
+  }
+}

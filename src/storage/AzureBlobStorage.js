@@ -11,6 +11,7 @@ class AzureBlobStorage {
     const indexContainerName = this.sanitizeContainerName(`__indexes`);
     this.indexContainer = this.blobServiceClient.getContainerClient(indexContainerName);
     this.indexContainer.createIfNotExists();
+    this.uniqueConstraints = {};
   }
 
   sanitizeContainerName(name) {
@@ -44,11 +45,30 @@ class AzureBlobStorage {
       id = ulid();
     }
     data.id = id;
+
+    // Check unique constraints
+    await this.checkUniqueConstraints(collection, data);
+
     const containerClient = await this.getContainerClient(collection);
     const blobClient = containerClient.getBlockBlobClient(id);
     await blobClient.upload(JSON.stringify(data), JSON.stringify(data).length);
     await this.updateIndexes(collection, id, data);
     return id;
+  }
+
+  async checkUniqueConstraints(collection, data) {
+    const constraints = this.uniqueConstraints[collection] || [];
+    for (const fields of constraints) {
+      const indexKey = Array.isArray(fields) ? fields.join('_') : fields;
+      const fullIndexKey = `${collection}_${indexKey}`;
+      const indexData = await this.getIndex(collection, indexKey);
+      if (indexData && indexData.unique) {
+        const value = this.getIndexValue(data, fields);
+        if (value !== undefined && indexData.index[value] && indexData.index[value].length > 0) {
+          throw new Error(`Unique constraint violation for fields ${indexKey} with value ${value}`);
+        }
+      }
+    }
   }
 
   async read(collection, id) {
@@ -61,7 +81,10 @@ class AzureBlobStorage {
 
   async update(collection, id, data) {
     const oldData = await this.read(collection, id);
-    await this.create(collection, id, data);
+    await this.checkUniqueConstraints(collection, data);
+    const containerClient = await this.getContainerClient(collection);
+    const blobClient = containerClient.getBlockBlobClient(id);
+    await blobClient.upload(JSON.stringify(data), JSON.stringify(data).length);
     await this.updateIndexes(collection, id, data, oldData);
   }
 
@@ -94,15 +117,37 @@ class AzureBlobStorage {
     return filteredDocuments.slice(offset, offset + limit);
   }
 
-  async createIndex(collection, field) {
+  async createIndex(collection, fields, options = {}) {
+    const { unique = false, createOnlyIfNotExists = false } = options;
+    const indexKey = Array.isArray(fields) ? fields.join('_') : fields;
+    const fullIndexKey = `${collection}_${indexKey}`;
+    const indexBlobClient = this.indexContainer.getBlockBlobClient(fullIndexKey);
+
+    try {
+      await indexBlobClient.getProperties();
+      if (createOnlyIfNotExists) {
+        console.log(`Index for ${indexKey} in ${collection} already exists. Skipping creation.`);
+        return;
+      } else {
+        console.log(`Index for ${indexKey} in ${collection} already exists. Recreating.`);
+      }
+    } catch (error) {
+      if (error.statusCode !== 404) {
+        throw error;
+      }
+    }
+
     const index = {};
     const containerClient = await this.getContainerClient(collection);
     const blobs = containerClient.listBlobsFlat();
 
     for await (const blob of blobs) {
       const doc = await this.read(collection, blob.name);
-      const value = doc[field];
+      const value = this.getIndexValue(doc, fields);
       if (value !== undefined) {
+        if (unique && index[value]) {
+          throw new Error(`Unique constraint violation for fields ${indexKey} with value ${value}`);
+        }
         if (!index[value]) {
           index[value] = [];
         }
@@ -110,8 +155,23 @@ class AzureBlobStorage {
       }
     }
 
-    const indexBlobClient = this.indexContainer.getBlockBlobClient(`${collection}_${field}`);
-    await indexBlobClient.upload(JSON.stringify(index), JSON.stringify(index).length);
+    await indexBlobClient.upload(JSON.stringify({ unique, index }), JSON.stringify({ unique, index }).length);
+    console.log(`Index for ${indexKey} in ${collection} has been created.`);
+
+    // Update unique constraints
+    if (unique) {
+      if (!this.uniqueConstraints[collection]) {
+        this.uniqueConstraints[collection] = [];
+      }
+      this.uniqueConstraints[collection].push(fields);
+    }
+  }
+
+  getIndexValue(doc, fields) {
+    if (Array.isArray(fields)) {
+      return fields.map(field => doc[field]).join('_');
+    }
+    return doc[fields];
   }
 
   async getIndex(collection, field) {
@@ -131,11 +191,13 @@ class AzureBlobStorage {
   async updateIndexes(collection, id, newData, oldData) {
     const indexBlobs = this.indexContainer.listBlobsFlat({ prefix: `${collection}_` });
     for await (const indexBlob of indexBlobs) {
-      const field = indexBlob.name.split('_')[1];
-      const index = await this.getIndex(collection, field);
-      if (index) {
+      const indexKey = indexBlob.name.split('_').slice(1).join('_');
+      const fields = indexKey.split('_');
+      const indexData = await this.getIndex(collection, indexKey);
+      if (indexData) {
+        const { unique, index } = indexData;
         if (oldData) {
-          const oldValue = oldData[field];
+          const oldValue = this.getIndexValue(oldData, fields);
           if (oldValue !== undefined) {
             index[oldValue] = index[oldValue].filter(docId => docId !== id);
             if (index[oldValue].length === 0) {
@@ -143,8 +205,11 @@ class AzureBlobStorage {
             }
           }
         }
-        const newValue = newData[field];
+        const newValue = this.getIndexValue(newData, fields);
         if (newValue !== undefined) {
+          if (unique && index[newValue] && index[newValue].length > 0) {
+            throw new Error(`Unique constraint violation for fields ${indexKey} with value ${newValue}`);
+          }
           if (!index[newValue]) {
             index[newValue] = [];
           }
@@ -152,7 +217,7 @@ class AzureBlobStorage {
             index[newValue].push(id);
           }
         }
-        await this.indexContainer.getBlockBlobClient(indexBlob.name).upload(JSON.stringify(index), JSON.stringify(index).length);
+        await this.indexContainer.getBlockBlobClient(indexBlob.name).upload(JSON.stringify({ unique, index }), JSON.stringify({ unique, index }).length);
       }
     }
   }

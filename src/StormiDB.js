@@ -26,8 +26,8 @@ class StormiDB {
     return this.storage.delete(collection, id);
   }
 
-  async createIndex(collection, field) {
-    return this.storage.createIndex(collection, field);
+  async createIndex(collection, field, options = {}) {
+    return this.storage.createIndex(collection, field, options);
   }
 
   async dropCollection(collection) {

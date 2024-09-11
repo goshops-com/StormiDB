@@ -6,21 +6,34 @@ const AzureBlobStorage = require('./src/storage/AzureBlobStorage');
 
 const connectionString = process.env.AZURE_BLOB_STORAGE;
 const storage = new AzureBlobStorage(connectionString, {
-  prefix: 'poc1'
+  prefix: 'poc3'
 });
 
-const db = new StormiDB(storage);
+const stormiDB = new StormiDB(storage);
 
 // Now you can use db to interact with your data
 
 
 async function main(){
-  //const userId = await db.create('users', { name: 'Alice', age: 30 });
-  //console.log(`Created user with ID: ${userId}`);
 
-  //await db.createIndex('users', 'age');
-  const youngAdults = await db.find('users', { age: { $gte: 18, $lt: 30 } });
-  console.log('Young adults:', youngAdults);
+  const youngAdults = await stormiDB.find('users', {});
+  console.log(youngAdults);
+  // return  
+  // Create a unique index on a single field
+await stormiDB.createIndex('users', 'email', { unique: true, createOnlyIfNotExists: true });
+
+// Create a unique index on a group of fields
+await stormiDB.createIndex('users', ['firstName', 'lastName'], { unique: true, createOnlyIfNotExists: true });
+
+// Create a non-unique index
+await stormiDB.createIndex('users', 'age', { createOnlyIfNotExists: false });
+
+// This will throw an error if a user with the same email already exists
+await stormiDB.create('users', { email: 'user@example.com', firstName: 'John', lastName: 'Doe' });
+
+// This will throw an error if a user with the same first name and last name combination already exists
+// await stormiDB.create('users', { email: 'another@example.com', firstName: 'John', lastName: 'Doe' });
+  
 }
 
 main();

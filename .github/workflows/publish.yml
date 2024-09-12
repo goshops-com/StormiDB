@@ -1,0 +1,61 @@
+name: Publish to npm
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: "16"
+          registry-url: "https://registry.npmjs.org/"
+
+      - name: Get current version from package.json
+        id: pkg
+        run: |
+          echo "VERSION=$(jq -r .version package.json)" >> $GITHUB_ENV
+
+      - name: Get latest version from npm
+        id: npm
+        run: |
+          echo "NPM_VERSION=$(npm show gopersonal-react-native-sdk version)" >> $GITHUB_ENV
+
+      - name: Compare versions
+        id: check_version
+        run: |
+          if [ "${{ env.VERSION }}" == "${{ env.NPM_VERSION }}" ]; then
+            echo "version_changed=false" >> $GITHUB_OUTPUT
+            echo "No version change detected. Skipping publish."
+          else
+            echo "version_changed=true" >> $GITHUB_OUTPUT
+            echo "Version change detected. Proceeding with publish."
+          fi
+
+      - name: Install dependencies
+        if: steps.check_version.outputs.version_changed == 'true'
+        run: npm install
+
+      - name: Publish to npm
+        if: steps.check_version.outputs.version_changed == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish
+
+      - name: Output result
+        run: |
+          if [ "${{ steps.check_version.outputs.version_changed }}" == "true" ]; then
+            echo "Package was published to npm."
+          else
+            echo "No new version to publish."
+          fi

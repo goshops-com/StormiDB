@@ -254,20 +254,23 @@ class AzureBlobStorage {
   async lookupIndex(collection, field, condition) {
     const index = await this.getIndex(collection, field);
     if (!index) return [];
-
+  
     let matchingIds = [];
+    const actualIndex = index.index;  // Access the nested 'index' field
+  
     if (condition.operator === 'EQ') {
-      matchingIds = index[condition.value] || [];
+      matchingIds = actualIndex[condition.value] || [];
     } else {
-      for (const [value, ids] of Object.entries(index)) {
+      for (const [value, ids] of Object.entries(actualIndex)) {
         if (evaluateCondition({ [field]: value }, field, condition)) {
           matchingIds.push(...ids);
         }
       }
     }
-
+  
     return Promise.all(matchingIds.map(id => this.read(collection, id)));
   }
+  
 
   async fullCollectionScan(collection) {
     const containerClient = await this.getContainerClient(collection);

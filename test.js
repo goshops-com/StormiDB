@@ -13,7 +13,7 @@ const stormiDB = new StormiDB(storage);
 
 // Now you can use db to interact with your data
 
-
+//
 async function main(){
 
   // await stormiDB.createIndex('users', 'email', { unique: true, createOnlyIfNotExists: true });

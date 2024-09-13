@@ -1,4 +1,4 @@
-// src/MongosS3.js
+// src/StormiDB.js
 
 class StormiDB {
   constructor(storage) {

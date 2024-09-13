@@ -1,16 +1,15 @@
 # StormiDB
 
-StormiDB is a lightweight, document-oriented database library that uses cloud object storage (Azure Blob Storage and S3-compatible) as its backend. It's designed for simplicity, scalability, and resilience.
+StormiDB is a flexible and efficient NoSQL database library that uses Azure Blob Storage as its backend. It provides a simple interface for performing CRUD operations, creating indexes, and querying data.
 
-## Why StormiDB?
+## Features
 
-StormiDB isn't trying to replace MongoDB or other full-featured NoSQL databases. Instead, it offers a simpler alternative for projects that:
-
-- Need a document store with basic querying capabilities
-- Want to leverage the scalability and durability of cloud object storage
-- Prefer a simpler architecture with fewer moving parts
-
-By relying solely on object storage, StormiDB makes your data architecture simpler and inherits the scalability and resilience characteristics of major cloud providers.
+- CRUD operations (Create, Read, Update, Delete)
+- Indexing support (including compound, date, and default indexes)
+- Querying with support for various operators
+- Automatic ID generation using ULID
+- Concurrency control with optimistic locking
+- Pagination support
 
 ## Installation
 
@@ -18,120 +17,221 @@ By relying solely on object storage, StormiDB makes your data architecture simpl
 npm install stormidb
 ```
 
-## Quick Start
+## Usage
+
+### Initializing StormiDB
 
 ```javascript
-const StormiDB = require('stormidb');
+const { StormiDB, AzureBlobStorage } = require('stormidb');
 
-// For Azure Blob Storage
-const db = new StormiDB.AzureAdapter('YOUR_AZURE_CONNECTION_STRING');
+const connectionString = 'your_azure_storage_connection_string';
+const storage = new AzureBlobStorage(connectionString);
+const db = new StormiDB(storage);
+```
 
-// For S3-compatible storage
-// const db = new StormiDB.S3Adapter({
-//   endpoint: 'YOUR_S3_ENDPOINT',
-//   credentials: {
-//     accessKeyId: 'YOUR_ACCESS_KEY',
-//     secretAccessKey: 'YOUR_SECRET_KEY'
-//   }
-// });
+### Creating a Document
 
-// Create a document
-const userId = await db.create('users', { name: 'Alice', age: 30 });
-console.log(`Created user with ID: ${userId}`);
+```javascript
+const collection = 'users';
+const userData = {
+  name: 'John Doe',
+  email: 'john@example.com',
+  age: 30
+};
 
-// Find documents
-const users = await db.find('users', { age: { $gt: 25 } });
-console.log('Users over 25:', users);
+const userId = await db.create(collection, userData);
+console.log('Created user with ID:', userId);
+```
 
-// Update a document
-await db.update('users', userId, { name: 'Alice', age: 31 });
+### Reading a Document
 
-// Delete a document
+```javascript
+const user = await db.findOne('users', { id: userId });
+console.log('Found user:', user);
+```
+
+### Updating a Document
+
+```javascript
+const updatedData = { age: 31 };
+await db.update('users', userId, updatedData);
+console.log('Updated user age');
+```
+
+### Deleting a Document
+
+```javascript
 await db.delete('users', userId);
+console.log('Deleted user');
 ```
 
-## API Reference
-
-### Constructor
-
-- `new StormiDB.AzureAdapter(connectionString)`
-- `new StormiDB.S3Adapter(config)`
-
-### Methods
-
-- `create(collection, document, [id])`: Create a new document. Returns the document ID.
-- `find(collection, query, [options])`: Find documents matching the query.
-- `findOne(collection, query)`: Find a single document matching the query.
-- `update(collection, id, document)`: Update a document by ID.
-- `delete(collection, id)`: Delete a document by ID.
-- `createIndex(collection, field)`: Create an index on a field.
-
-### Query Operators
-
-StormiDB supports basic comparison operators:
-
-- `$eq`: Equal to
-- `$gt`: Greater than
-- `$lt`: Less than
-- `$gte`: Greater than or equal to
-- `$lte`: Less than or equal to
-
-### Options
-
-The `find` method accepts an options object:
-
-- `limit`: Maximum number of results to return
-- `offset`: Number of results to skip
-
-## Examples
-
-### Creating and querying documents
+### Creating an Index
 
 ```javascript
-// Create some users
-await db.create('users', { name: 'Bob', age: 25 });
-await db.create('users', { name: 'Charlie', age: 35 });
-
-// Find users over 30
-const adultsOver30 = await db.find('users', { age: { $gt: 30 } });
-console.log('Adults over 30:', adultsOver30);
-
-// Find the first user named Bob
-const bob = await db.findOne('users', { name: 'Bob' });
-console.log('Bob:', bob);
+await db.createIndex('users', 'email', { unique: true });
+console.log('Created unique index on email field');
 ```
 
-### Using indexes for better performance
+### Querying Documents
 
 ```javascript
-// Create an index on the 'age' field
-await db.createIndex('users', 'age');
+const query = { age: { $gte: 25, $lt: 35 } };
+const users = await db.find('users', query);
+console.log('Users aged 25-34:', users);
+```
 
-// This query will now use the index
-const youngAdults = await db.find('users', { age: { $gte: 18, $lt: 30 } });
-console.log('Young adults:', youngAdults);
+### Creating a Compound Index
+
+```javascript
+await db.createIndex('users', ['name', 'email'], { type: 'compound' });
+console.log('Created compound index on name and email fields');
+```
+
+### Creating a Date Index
+
+```javascript
+await db.createIndex('events', 'eventDate', { type: 'date', granularity: 'daily' });
+console.log('Created date index on eventDate field');
+```
+
+### Querying with a Date Index
+
+```javascript
+const startDate = new Date('2023-01-01');
+const endDate = new Date('2023-12-31');
+const events = await db.find('events', {
+  eventDate: { $between: [startDate, endDate] }
+});
+console.log('Events in 2023:', events);
 ```
 
 ### Pagination
 
-```javascript
-// Get the first 10 users
-const firstPage = await db.find('users', {}, { limit: 10 });
+StormiDB supports pagination through the `limit` and `offset` options in the `find` method:
 
-// Get the next 10 users
-const secondPage = await db.find('users', {}, { limit: 10, offset: 10 });
+```javascript
+const pageSize = 10;
+const page = 1;
+
+const users = await db.find('users', {}, {
+  limit: pageSize,
+  offset: (page - 1) * pageSize
+});
+
+console.log(`Users on page ${page}:`, users);
 ```
 
-## Limitations
+To implement pagination in your application:
 
-- StormiDB is not a full replacement for traditional databases. It's designed for simplicity and may not be suitable for complex querying needs or high-concurrency scenarios.
-- Performance may vary depending on your object storage configuration and network conditions.
-- Transactions are not supported.
+1. Decide on a page size (e.g., 10 items per page).
+2. Calculate the offset based on the current page number: `offset = (pageNumber - 1) * pageSize`.
+3. Use these values in the `find` method options.
+4. To get the total count of items, you may need to perform a separate query without `limit` and `offset`.
+
+## Index Types and When to Use Them
+
+StormiDB supports three types of indexes:
+
+1. **Default Index**: Used for general-purpose indexing on a single field.
+   - When to use: For fields that you frequently query with equality or range conditions.
+   - Example: `await db.createIndex('users', 'age');`
+
+2. **Compound Index**: Used for indexing multiple fields together.
+   - When to use: When you often query on a combination of fields or need to support sorting on multiple fields.
+   - Example: `await db.createIndex('users', ['lastName', 'firstName'], { type: 'compound' });`
+
+3. **Date Index**: Optimized for date-based queries.
+   - When to use: For fields containing dates that you frequently use in range queries or for time-based data analysis.
+   - Example: `await db.createIndex('events', 'eventDate', { type: 'date', granularity: 'daily' });`
+
+Choose the appropriate index type based on your query patterns:
+
+- If you frequently query on a single field, use a default index.
+- If you often query on combinations of fields, use a compound index.
+- If you perform many date-range queries, use a date index.
+
+Remember that indexes improve query performance but can slow down write operations. Balance the number of indexes with your read/write patterns.
+
+## How StormiDB Works Internally
+
+StormiDB uses Azure Blob Storage as its backend, with the following key components:
+
+1. **Collections**: Each collection is represented as a container in Azure Blob Storage.
+
+2. **Documents**: Each document is stored as a JSON blob within its collection's container.
+
+3. **Indexes**: Indexes are stored as separate blobs in a special `__indexes` container.
+
+4. **CRUD Operations**:
+   - Create: Generates a new ULID for the document (if not provided) and stores it as a JSON blob.
+   - Read: Retrieves the JSON blob and parses it into a JavaScript object.
+   - Update: Replaces the existing JSON blob with the updated data.
+   - Delete: Removes the JSON blob from the container.
+
+5. **Querying**:
+   - The query parser converts the query object into a structured format.
+   - The system attempts to use the best available index for the query.
+   - If no suitable index is found, it performs a full collection scan.
+
+6. **Indexing**:
+   - Default indexes store a mapping of indexed field values to document IDs.
+   - Compound indexes combine multiple fields into a single index entry.
+   - Date indexes use a special structure optimized for range queries on dates.
+
+7. **Concurrency Control**: Uses ETags for optimistic locking to handle concurrent modifications.
+
+8. **Pagination**: Implemented using the `limit` and `offset` options in the query process.
+
+This architecture allows StormiDB to provide a document database-like interface while leveraging the scalability and durability of Azure Blob Storage.
+
+## API Reference
+
+### StormiDB Class
+
+- `constructor(storage)`: Creates a new StormiDB instance with the given storage backend.
+- `create(collection, data, id = null)`: Creates a new document in the specified collection.
+- `find(collection, query, options = {})`: Finds documents in the collection that match the query.
+- `findOne(collection, query)`: Finds the first document that matches the query.
+- `update(collection, id, data)`: Updates a document with the specified ID.
+- `delete(collection, id)`: Deletes a document with the specified ID.
+- `createIndex(collection, field, options = {})`: Creates an index on the specified field(s).
+- `dropCollection(collection)`: Drops the entire collection.
+
+### AzureBlobStorage Class
+
+- `constructor(connectionString, options = {})`: Creates a new AzureBlobStorage instance.
+- `create(collection, id, data)`: Creates a new document in the specified collection.
+- `read(collection, id)`: Reads a document with the specified ID.
+- `update(collection, id, data)`: Updates a document with the specified ID.
+- `delete(collection, id)`: Deletes a document with the specified ID.
+- `find(collection, query, options = {})`: Finds documents in the collection that match the query.
+- `createIndex(collection, fields, options = {})`: Creates an index on the specified field(s).
+- `dropCollection(collection)`: Drops the entire collection.
+
+## Query Operators
+
+StormiDB supports the following query operators:
+
+- `$eq`: Equality
+- `$ne`: Not equal
+- `$gt`: Greater than
+- `$gte`: Greater than or equal to
+- `$lt`: Less than
+- `$lte`: Less than or equal to
+- `$in`: In array
+- `$nin`: Not in array
+- `$and`: Logical AND
+- `$or`: Logical OR
+- `$not`: Logical NOT
+- `$exists`: Field exists
+- `$type`: Field is of specified type
+- `$regex`: Regular expression match
+- `$between`: Between two values (inclusive)
 
 ## Contributing
 
-We welcome contributions! Please see our contributing guidelines for more details.
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-StormiDB is released under the MIT License.
+This project is licensed under the MIT License.

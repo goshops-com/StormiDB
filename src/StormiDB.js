@@ -13,6 +13,10 @@ class StormiDB {
     return this.storage.find(collection, query, options);
   }
 
+  async findById(collection, id) {
+    return this.storage.read(collection, id);
+  }
+  
   async findOne(collection, query) {
     const results = await this.storage.find(collection, query, { limit: 1 });
     return results[0] || null;

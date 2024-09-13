@@ -43,10 +43,17 @@ const userId = await db.create(collection, userData);
 console.log('Created user with ID:', userId);
 ```
 
+### Reading a Document by ID
+
+```javascript
+const user = await db.findById('users', userId);
+console.log('Found user:', user);
+```
+
 ### Reading a Document
 
 ```javascript
-const user = await db.findOne('users', { id: userId });
+const user = await db.findOne('users', { email: 'john@example.com' });
 console.log('Found user:', user);
 ```
 
@@ -190,6 +197,7 @@ This architecture allows StormiDB to provide a document database-like interface 
 
 - `constructor(storage)`: Creates a new StormiDB instance with the given storage backend.
 - `create(collection, data, id = null)`: Creates a new document in the specified collection.
+- `findById(collection, id)`: Retrieves a document by its ID.
 - `find(collection, query, options = {})`: Finds documents in the collection that match the query.
 - `findOne(collection, query)`: Finds the first document that matches the query.
 - `update(collection, id, data)`: Updates a document with the specified ID.

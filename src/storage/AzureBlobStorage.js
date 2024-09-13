@@ -480,8 +480,15 @@ class AzureBlobStorage {
   async updateIndexes(collection, id, newData, oldData) {
     const indexBlobs = this.indexContainer.listBlobsFlat({ prefix: `${collection}_` });
     for await (const indexBlob of indexBlobs) {
-      const indexKey = indexBlob.name.substring(this.indexContainer.containerName.length + 1);
+      const indexKey = indexBlob.name; // Use the full blob name as the indexKey
       let indexData = await this.getIndexWithETag(collection, indexKey);
+      
+      // Skip this index if it doesn't exist
+      if (!indexData) {
+        console.warn(`Index ${indexKey} not found for collection ${collection}. Skipping.`);
+        continue;
+      }
+  
       let { unique, type, fields, eTag } = indexData;
   
       // Implement concurrency control
@@ -504,6 +511,10 @@ class AzureBlobStorage {
             // ETag mismatch, read the latest index data and retry
             retries++;
             indexData = await this.getIndexWithETag(collection, indexKey);
+            if (!indexData) {
+              console.warn(`Index ${indexKey} was deleted during update. Skipping.`);
+              break;
+            }
             eTag = indexData.eTag;
           } else {
             throw error;
@@ -511,14 +522,14 @@ class AzureBlobStorage {
         }
       }
   
-      if (!success) {
-        throw new Error(`Failed to update index ${indexKey} after ${maxRetries} retries due to concurrent modifications.`);
+      if (!success && retries === maxRetries) {
+        console.error(`Failed to update index ${indexKey} after ${maxRetries} retries due to concurrent modifications.`);
       }
     }
   }
 
-  async getIndexWithETag(collection, indexKey) {
-    const indexBlobClient = this.indexContainer.getBlockBlobClient(`${collection}_${indexKey}`);
+  async getIndexWithETag(indexKey) {
+    const indexBlobClient = this.indexContainer.getBlockBlobClient(indexKey);
     try {
       const downloadResponse = await indexBlobClient.download();
       const downloaded = await streamToBuffer(downloadResponse.readableStreamBody);

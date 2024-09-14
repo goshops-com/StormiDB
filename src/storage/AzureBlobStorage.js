@@ -79,6 +79,7 @@ class AzureBlobStorage {
     await this.checkUniqueConstraints(collection, data);
     const containerClient = await this.getContainerClient(collection);
     const blobClient = containerClient.getBlockBlobClient(id);
+    data.id = id;
     await blobClient.upload(JSON.stringify(data), JSON.stringify(data).length);
     await this.updateIndexes(collection, id, data, oldData);
   }
@@ -922,7 +923,9 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
     const containers = this.blobServiceClient.listContainers();
     const containerNames = [];
     for await (const container of containers) {
-      containerNames.push(container.name);
+      if (container.name !== 'indexes'){
+        containerNames.push(container.name);
+      }
     }
     return containerNames;
   }

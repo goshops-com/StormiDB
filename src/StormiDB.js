@@ -37,6 +37,10 @@ class StormiDB {
   async dropCollection(collection) {
     return this.storage.dropCollection(collection);
   }
+
+  async getCollections() {
+    return this.storage.listCollections();
+  }
 }
 
 module.exports = StormiDB;

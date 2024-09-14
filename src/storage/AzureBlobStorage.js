@@ -464,12 +464,14 @@ class AzureBlobStorage {
   }
 
   async getIndex(collection, field) {
+    console.log('getIndex', `${collection}_${field}`);
     const indexBlobClient = this.indexContainer.getBlockBlobClient(`${collection}_${field}`);
     try {
       const downloadResponse = await indexBlobClient.download();
       const downloaded = await streamToBuffer(downloadResponse.readableStreamBody);
       return JSON.parse(downloaded.toString());
     } catch (error) {
+      console.log('error', error)
       if (error.statusCode === 404) {
         return null;
       }
@@ -774,7 +776,7 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
   let maxFieldsMatched = 0;
 
   for await (const indexBlob of indexBlobs) {
-    const indexKey = indexBlob.name.substring(this.indexContainer.containerName.length + 1);
+    const indexKey = indexBlob.name.split('_')[1];
     const indexData = await this.getIndex(collection, indexKey);
     const { type, fields } = indexData;
 

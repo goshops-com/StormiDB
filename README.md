@@ -29,6 +29,14 @@ const storage = new AzureBlobStorage(connectionString);
 const db = new StormiDB(storage);
 ```
 
+### List collections
+
+```javascript
+const stormi = new StormiDB(storage);
+const collections = await stormi.getCollections();
+console.log(collections); // This will print an array of collection names
+```
+
 ### Creating a Document
 
 ```javascript

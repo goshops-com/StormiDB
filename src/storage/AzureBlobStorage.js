@@ -67,6 +67,7 @@ class AzureBlobStorage {
   }
 
   async read(collection, id) {
+    console.log('read', collection, id)
     const containerClient = await this.getContainerClient(collection);
     const blobClient = containerClient.getBlockBlobClient(id);
     const downloadResponse = await blobClient.download();
@@ -92,8 +93,7 @@ class AzureBlobStorage {
     await this.removeFromIndexes(collection, id, oldData);
   }
 
-  async find(collection, query, options = {}) {
-    const { limit = Infinity, offset = 0 } = options;
+  async countDocuments(collection, query = {}) {
     const structuredQuery = parseQuery(query);
     const bestIndex = await this.findBestIndex(collection, structuredQuery);
   
@@ -124,21 +124,107 @@ class AzureBlobStorage {
       }
     }
   
-    let candidateDocuments;
-    if (candidateIds) {
-      candidateDocuments = await Promise.all([...candidateIds].map(id => this.read(collection, id)));
-    } else {
+    if (!candidateIds) {
       // No indexes or couldn't combine indexes, perform full scan
-      candidateDocuments = await this.fullCollectionScan(collection);
+      candidateIds = await this.fullCollectionScan(collection);
     }
   
-    const filteredDocuments = candidateDocuments.filter(doc =>
+    // If the query is empty, we can return the count immediately
+    if (Object.keys(structuredQuery).length === 0) {
+      return candidateIds.size;
+    }
+  
+    // Otherwise, we need to fetch and filter the documents
+    const documents = await Promise.all(Array.from(candidateIds).map(id => this.read(collection, id)));
+    const count = documents.filter(doc =>
       Object.entries(structuredQuery).every(([field, condition]) =>
         evaluateCondition(doc, field, condition)
       )
-    );
+    ).length;
   
-    return filteredDocuments.slice(offset, offset + limit);
+    return count;
+  }
+
+  async find(collection, query, options = {}) {
+    const { limit = Infinity, offset = 0, after = null } = options;
+    const structuredQuery = parseQuery(query);
+    const bestIndex = await this.findBestIndex(collection, structuredQuery);
+  
+    let candidateIds;
+  
+    if (bestIndex) {
+      const { indexKey, indexFields, type } = bestIndex;
+      if (type === 'compound' && indexFields.every(field => field in structuredQuery)) {
+        // Use compound index
+        candidateIds = await this.lookupCompoundIndex(collection, indexKey, structuredQuery);
+      } else {
+        // Combine single-field indexes
+        const candidateIdSets = [];
+        for (const field of Object.keys(structuredQuery)) {
+          const ids = await this.lookupIndexIds(collection, field, structuredQuery[field]);
+          if (ids) {
+            candidateIdSets.push(new Set(ids));
+          } else {
+            // If any field doesn't have an index, we need to do a full scan
+            candidateIds = null;
+            break;
+          }
+        }
+  
+        if (candidateIdSets.length > 0) {
+          candidateIds = this.intersectSets(candidateIdSets);
+        }
+      }
+    }
+  
+    if (!candidateIds) {
+      // No indexes or couldn't combine indexes, perform full scan
+      candidateIds = await this.fullCollectionScan(collection);
+    }
+  
+    // Sort candidateIds (they are ULIDs, so lexicographic sort is correct)
+    const sortedIds = Array.from(candidateIds).sort();
+  
+    // Apply pagination
+    let startIndex = 0;
+    if (after) {
+      startIndex = sortedIds.findIndex(id => id > after) + 1;
+    } else {
+      startIndex = offset;
+    }
+    const paginatedIds = sortedIds.slice(startIndex, startIndex + limit);
+  
+    // Fetch and filter the documents
+    const documents = await Promise.all(
+      paginatedIds.map(async id => {
+        try {
+          if (typeof id !== 'string') {
+            console.error(`Invalid document ID in collection ${collection}: ${typeof id} ${JSON.stringify(id)}`);
+            return null;
+          }
+          return await this.read(collection, id);
+        } catch (error) {
+          if (error.statusCode === 404) {
+            console.warn(`Document with id ${id} not found in collection ${collection}. It may have been deleted.`);
+          } else {
+            console.error(`Error reading document with id ${id} in collection ${collection}:`, error);
+          }
+          return null;
+        }
+      })
+    );
+
+
+    // Filter out null documents (those that weren't found) and apply query filtering
+    const filteredDocuments = documents
+      .filter(doc => doc !== null)
+      .filter(doc =>
+        Object.entries(structuredQuery).every(([field, condition]) =>
+          evaluateCondition(doc, field, condition)
+        )
+      );
+  
+    return filteredDocuments;
   }
 
   intersectSets(sets) {

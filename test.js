@@ -23,36 +23,36 @@ async function main(){
   await db.createIndex(collectionName, 'createdAt', { type: 'date', granularity: 'daily' });
   await db.createIndex(collectionName, ['status', 'createdAt'], { type: 'compound' });
 
-  // Add 1,000 documents
-  const statuses = ['pending', 'shipped', 'delivered', 'canceled'];
-  const now = Date.now();
+  // // Add 1,000 documents
+  // const statuses = ['pending', 'shipped', 'delivered', 'canceled'];
+  // const now = Date.now();
 
-  console.log('Adding documents...');
-  const batchSize = 10; // Insert in batches of 20
-  let batch = [];
-  return;
-  for (let i = 0; i < 1000; i++) {
-      const data = {
-          orderId: `ORD${i.toString().padStart(4, '0')}`,
-          status: statuses[Math.floor(Math.random() * statuses.length)],
-          createdAt: new Date(now - Math.floor(Math.random() * 30) * 24 * 60 * 60 * 1000).toISOString(),
-          amount: Math.floor(Math.random() * 1000) + 100,
-      };
+  // console.log('Adding documents...');
+  // const batchSize = 10; // Insert in batches of 20
+  // let batch = [];
+  // return;
+  // for (let i = 0; i < 1000; i++) {
+  //     const data = {
+  //         orderId: `ORD${i.toString().padStart(4, '0')}`,
+  //         status: statuses[Math.floor(Math.random() * statuses.length)],
+  //         createdAt: new Date(now - Math.floor(Math.random() * 30) * 24 * 60 * 60 * 1000).toISOString(),
+  //         amount: Math.floor(Math.random() * 1000) + 100,
+  //     };
 
-      batch.push(db.create(collectionName, data));
+  //     batch.push(db.create(collectionName, data));
 
-      if (batch.length === batchSize) {
-          await Promise.all(batch);
-          console.log(`Added ${i + 1} documents`);
-          batch = []; // Reset the batch
-      }
-  }
+  //     if (batch.length === batchSize) {
+  //         await Promise.all(batch);
+  //         console.log(`Added ${i + 1} documents`);
+  //         batch = []; // Reset the batch
+  //     }
+  // }
 
-  // Insert any remaining documents
-  if (batch.length > 0) {
-      await Promise.all(batch);
-      console.log(`Added remaining documents`);
-  }
+  // // Insert any remaining documents
+  // if (batch.length > 0) {
+  //     await Promise.all(batch);
+  //     console.log(`Added remaining documents`);
+  // }
 
   console.log('Testing queries...');
 

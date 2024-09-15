@@ -24,8 +24,17 @@ class StormiDB {
     return results[0] || null;
   }
 
-  async update(collection, id, data) {
-    return this.storage.update(collection, id, data);
+  async update(collection, id, data, options = {}) {
+    if (options.upsert) {
+      const exists = await this.storage.read(collection, id);
+      if (exists) {
+        return this.storage.update(collection, id, data);
+      } else {
+        return this.storage.create(collection, data, id);
+      }
+    } else {
+      return this.storage.update(collection, id, data);
+    }
   }
 
   async delete(collection, id) {

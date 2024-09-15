@@ -35,8 +35,8 @@ class AzureBlobStorage {
     return containerClient;
   }
 
-  async create(collection, data) {
-    const id = ulid();
+  async create(collection, data, existingId = undefined) {
+    const id = existingId || ulid(); // Ensure ulid() is available
     data.id = id;
 
     // Check unique constraints

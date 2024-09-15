@@ -629,6 +629,9 @@ class AzureBlobStorage {
           if (error.code === 'BlobAlreadyExists' || error.statusCode === 409 || error.statusCode === 412) {
             // ETag mismatch, read the latest index data and retry
             retries++;
+            const delay = Math.pow(2, retries) * 100; // Delay in milliseconds
+            await new Promise(resolve => setTimeout(resolve, delay));
+
             indexData = await this.getIndexWithETag(collection, indexKey);
             if (!indexData) {
               console.warn(`Index ${indexKey} was deleted during update. Skipping.`);
@@ -815,6 +818,8 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
         } catch (error) {
           if (error.statusCode === 412) {
             retries++;
+            const delay = Math.pow(2, retries) * 100;
+            await new Promise(resolve => setTimeout(resolve, delay));
             indexData = await this.getIndexWithETag(collection, indexKey);
             eTag = indexData.eTag;
           } else {

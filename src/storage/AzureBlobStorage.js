@@ -169,33 +169,92 @@ class AzureBlobStorage {
   
 
   async find(collection, query, options = {}) {
-    const { limit = Infinity, offset = 0, after = null } = options;
+    const { limit = Infinity, offset = 0, after = null, analyze = false } = options;
     const structuredQuery = parseQuery(query);
-    const bestIndex = await this.findBestIndex(collection, structuredQuery);
-  
+    let storageReads = 0;
+    let indexesUsed = new Set();
     let candidateIds;
+    let numDocumentsRead = 0;
+  
+    // Find the best index
+    let indexBlobs = [];
+    for await (const blob of this.indexContainer.listBlobsFlat({ prefix: `${collection}_` })) {
+      indexBlobs.push(blob);
+    }
+    storageReads += 1; // Listing index blobs counts as one storage read
+  
+    let bestIndex = null;
+    let maxFieldsMatched = 0;
+  
+    for (const indexBlob of indexBlobs) {
+      const indexKey = indexBlob.name;
+      const indexData = await this.getIndex(indexKey);
+      storageReads += 1; // getIndex call counts as storage read
+  
+      if (!indexData) continue;
+      const { type, fields } = indexData;
+      const indexFields = Array.isArray(fields) ? fields : [fields];
+  
+      const fieldsMatched = indexFields.filter(field => field in structuredQuery).length;
+  
+      if (fieldsMatched > maxFieldsMatched) {
+        maxFieldsMatched = fieldsMatched;
+        bestIndex = { indexKey, indexFields, type };
+      }
+  
+      if (fieldsMatched === Object.keys(structuredQuery).length) {
+        break; // Found an index matching all query fields
+      }
+    }
   
     if (bestIndex) {
       const { indexKey, indexFields, type } = bestIndex;
-      if (type === 'compound' && indexFields.every(field => field in structuredQuery)) {
-        // Use compound index
-        candidateIds = await this.lookupCompoundIndex(collection, indexKey, structuredQuery);
+  
+      if (
+        (type === 'compound' && indexFields.every(field => field in structuredQuery)) ||
+        (type !== 'compound' && indexFields.length === 1 && indexFields.every(field => field in structuredQuery))
+      ) {
+        indexesUsed.add(indexKey);
+  
+        // Use the index directly
+        const indexData = await this.getIndex(indexKey);
+        storageReads += 1; // Reading index data
+  
+        const field = indexFields[0];
+        const condition = structuredQuery[field];
+        const ids = await this.lookupIndexIds(collection, field, condition);
+        storageReads += 1; // lookupIndexIds reads index
+  
+        if (ids !== null) {
+          candidateIds = new Set(ids);
+          numDocumentsRead = candidateIds.size;
+        } else {
+          // Should not happen, since we have the index
+          candidateIds = null;
+          indexesUsed = new Set();
+        }
       } else {
-        // Combine single-field indexes
+        // Combine single-field indexes using lookupIndexIds
         const candidateIdSets = [];
         for (const field of Object.keys(structuredQuery)) {
-          const ids = await this.lookupIndexIds(collection, field, structuredQuery[field]);
-          if (ids) {
+          const condition = structuredQuery[field];
+          const ids = await this.lookupIndexIds(collection, field, condition);
+          storageReads += 1; // lookupIndexIds reads index
+  
+          if (ids !== null) {
+            indexesUsed.add(`${collection}_${field}`);
             candidateIdSets.push(new Set(ids));
           } else {
-            // If any field doesn't have an index, we need to do a full scan
+            // No index for this field
             candidateIds = null;
+            indexesUsed = new Set();
             break;
           }
         }
   
         if (candidateIdSets.length > 0) {
           candidateIds = this.intersectSets(candidateIdSets);
+          numDocumentsRead = candidateIds.size;
         }
       }
     }
@@ -203,12 +262,14 @@ class AzureBlobStorage {
     if (!candidateIds) {
       // No indexes or couldn't combine indexes, perform full scan
       candidateIds = await this.fullCollectionScan(collection);
+      storageReads += 1; // fullCollectionScan reads blob list
+  
+      numDocumentsRead = candidateIds.size;
+      indexesUsed = new Set(['fullscan']);
     }
   
-    // Sort candidateIds (they are ULIDs, so lexicographic sort is correct)
-    const sortedIds = Array.from(candidateIds).sort();
-  
     // Apply pagination
+    let sortedIds = Array.from(candidateIds).sort();
     let startIndex = 0;
     if (after) {
       startIndex = sortedIds.findIndex(id => id > after) + 1;
@@ -216,6 +277,15 @@ class AzureBlobStorage {
       startIndex = offset;
     }
     const paginatedIds = sortedIds.slice(startIndex, startIndex + limit);
+  
+    if (analyze) {
+      // If analyze is true, return {
+      return {
+        indexesUsed: Array.from(indexesUsed),
+        storageReads,
+        estimatedDocumentsScanned: numDocumentsRead,
+      };
+    }
   
     // Fetch and filter the documents
     const documents = await Promise.all(
@@ -225,6 +295,7 @@ class AzureBlobStorage {
             // Skip invalid IDs
             return null;
           }
+          storageReads += 1; // Reading each document counts as a storage read
           return await this.read(collection, id);
         } catch (error) {
           if (error.statusCode === 404) {
@@ -237,7 +308,7 @@ class AzureBlobStorage {
       })
     );
   
-    // Filter out null documents (those that weren't found) and apply query filtering
+    // Filter out null documents and apply query filtering
     const filteredDocuments = documents
       .filter(doc => doc !== null)
       .filter(doc =>
@@ -248,6 +319,8 @@ class AzureBlobStorage {
   
     return filteredDocuments;
   }
+  
+  
   
 
   intersectSets(sets) {
@@ -897,6 +970,8 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
       );
     }
   }
+
+  
 
   async findBestIndex(collection, structuredQuery) {
     const indexBlobs = this.indexContainer.listBlobsFlat({ prefix: `${collection}_` });

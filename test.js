@@ -104,6 +104,14 @@ async function main(){
     });
     console.log('Users created today:', usersCreatedToday);
 
+    const usersCreatedToday2 = await db.find(collectionName, {
+      createdAt: {
+        $gte: startOfDay,
+        $lt: endOfDay,
+      },
+    }, { analyze: true });
+    console.log('Analize Users created today:', usersCreatedToday2);
+
     // Clean up: drop the collection
     await db.dropCollection(collectionName);
     console.log('Collection dropped.');

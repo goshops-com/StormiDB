@@ -84,7 +84,7 @@ function evaluateCondition(doc, field, condition) {
 
     // Handle condition values for different operators
     if (Array.isArray(conditionValueToCompare)) {
-      conditionValueToCompare = conditionValueToCompare.map(value => {
+      conditionValueToCompare = conditionValueToCompare.map((value) => {
         return isISODateString(value) ? new Date(value).getTime() : value;
       });
     } else {
@@ -97,6 +97,7 @@ function evaluateCondition(doc, field, condition) {
   const comparisonFunction = operatorFunctions[condition.operator];
   return comparisonFunction(docValueToCompare, conditionValueToCompare);
 }
+
 
 // Helper function to check if a string is an ISO date string
 function isISODateString(value) {

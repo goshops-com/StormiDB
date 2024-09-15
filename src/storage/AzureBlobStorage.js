@@ -181,13 +181,86 @@ class AzureBlobStorage {
   
 
   async find(collection, query, options = {}) {
-    const { limit = Infinity, offset = 0, after = null, analyze = false } = options;
-    const structuredQuery = parseQuery(query);
-    let storageReads = 0;
-    let indexesUsed = new Set();
-    let candidateIds;
-    let numDocumentsRead = 0;
-  
+      const { limit = Infinity, offset = 0, after = null, analyze = false } = options;
+      const structuredQuery = parseQuery(query);
+      let storageReads = 0;
+      let indexesUsed = new Set();
+      let candidateIds;
+      let numDocumentsRead = 0;
+      
+      // Check if the query is empty and no suitable index is found
+    const isQueryEmpty = Object.keys(structuredQuery).length === 0;
+
+    if (isQueryEmpty) {
+      // Use efficient blob listing with pagination
+      const containerClient = await this.getContainerClient(collection);
+      let continuationToken = undefined;
+      let processed = 0;
+      const documents = [];
+
+      // If 'after' is specified, set the continuationToken accordingly
+      if (after) {
+        continuationToken = after;
+      }
+
+      // Define the maximum number of documents to fetch
+      const maxDocuments = limit === Infinity ? undefined : limit;
+
+      // Use the byPage method to fetch blobs in pages
+      const maxPageSize = 5000; // Adjust based on your performance needs
+      const iter = containerClient.listBlobsFlat().byPage({ maxPageSize, continuationToken });
+
+      for await (const response of iter) {
+        storageReads += 1; // Each page is a storage read
+
+        for (const blob of response.segment.blobItems) {
+          // If 'after' is specified, skip blobs until after the specified ID
+          if (after && blob.name <= after) {
+            continue;
+          }
+
+          // Apply offset
+          if (processed < offset) {
+            processed += 1;
+            continue;
+          }
+
+          // Read the document
+          const doc = await this.read(collection, blob.name);
+          numDocumentsRead += 1;
+
+          if (doc) {
+            documents.push(doc);
+          }
+
+          if (maxDocuments && documents.length >= maxDocuments) {
+            break;
+          }
+        }
+
+        if (maxDocuments && documents.length >= maxDocuments) {
+          break;
+        }
+
+        // Update the continuationToken for the next iteration
+        continuationToken = response.continuationToken;
+
+        // If no more blobs, break the loop
+        if (!continuationToken) {
+          break;
+        }
+      }
+
+      if (analyze) {
+        return {
+          indexesUsed: ['fullscan'],
+          storageReads,
+          estimatedDocumentsScanned: numDocumentsRead,
+        };
+      }
+
+      return documents;
+    }
     // Find the best index
     let indexBlobs = [];
     for await (const blob of this.indexContainer.listBlobsFlat({ prefix: `${collection}_` })) {

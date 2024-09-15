@@ -112,6 +112,13 @@ async function main(){
     }, { analyze: true });
     console.log('Analize Users created today:', usersCreatedToday2);
 
+
+    const allUsers1 = await db.find(collectionName, {}, {limit:1, offset:0});
+    console.log('allUsers', allUsers1);
+
+    const allUsers2 = await db.find(collectionName, {}, {limit:1, offset:1});
+    console.log('allUsers', allUsers2);
+
     // Clean up: drop the collection
     await db.dropCollection(collectionName);
     console.log('Collection dropped.');

@@ -7,115 +7,109 @@ const AzureBlobStorage = require('./src/storage/AzureBlobStorage');
 const connectionString = process.env.AZURE_BLOB_STORAGE;
 const storage = new AzureBlobStorage(connectionString);
 
-const stormiDB = new StormiDB(storage);
-
 // Now you can use db to interact with your data
 
 //
 async function main(){
+  try {
+    const db = new StormiDB(storage);
 
-  const db = new StormiDB(storage);
+    // Define the collection name
+    const collectionName = 'users100';
 
-  const collectionName = 'orders8';
+    // Create indexes
+    await db.createIndex(collectionName, 'email', { unique: true });
+    await db.createIndex(collectionName, ['firstName', 'lastName'], { type: 'compound' });
+    await db.createIndex(collectionName, 'createdAt', { type: 'date', granularity: 'daily' });
 
-  // Create indexes
-  await db.createIndex(collectionName, 'status');
-  await db.createIndex(collectionName, 'createdAt', { type: 'date', granularity: 'daily' });
-  await db.createIndex(collectionName, ['status', 'createdAt'], { type: 'compound' });
+    console.log('Indexes created.');
 
-  // // Add 1,000 documents
-  // const statuses = ['pending', 'shipped', 'delivered', 'canceled'];
-  // const now = Date.now();
+    // Insert documents
+    const userId1 = await db.create(collectionName, {
+      firstName: 'John',
+      lastName: 'Doe',
+      email: 'john.doe@example.com',
+      createdAt: new Date().toISOString(),
+    });
 
-  // console.log('Adding documents...');
-  // const batchSize = 10; // Insert in batches of 20
-  // let batch = [];
-  // return;
-  // for (let i = 0; i < 1000; i++) {
-  //     const data = {
-  //         orderId: `ORD${i.toString().padStart(4, '0')}`,
-  //         status: statuses[Math.floor(Math.random() * statuses.length)],
-  //         createdAt: new Date(now - Math.floor(Math.random() * 30) * 24 * 60 * 60 * 1000).toISOString(),
-  //         amount: Math.floor(Math.random() * 1000) + 100,
-  //     };
+    const userId2 = await db.create(collectionName, {
+      firstName: 'Jane',
+      lastName: 'Smith',
+      email: 'jane.smith@example.com',
+      createdAt: new Date().toISOString(),
+    });
 
-  //     batch.push(db.create(collectionName, data));
+    console.log('Documents inserted:', userId1, userId2);
 
-  //     if (batch.length === batchSize) {
-  //         await Promise.all(batch);
-  //         console.log(`Added ${i + 1} documents`);
-  //         batch = []; // Reset the batch
-  //     }
-  // }
+    // Try to insert a document with a duplicate email (should fail)
+    try {
+      await db.create(collectionName, {
+        firstName: 'Jim',
+        lastName: 'Beam',
+        email: 'john.doe@example.com', // Duplicate email
+        createdAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Expected error on duplicate email:', error.message);
+    }
 
-  // // Insert any remaining documents
-  // if (batch.length > 0) {
-  //     await Promise.all(batch);
-  //     console.log(`Added remaining documents`);
-  // }
+    // Find a document by ID
+    const user1 = await db.findById(collectionName, userId1);
+    console.log('User 1:', user1);
 
-  console.log('Testing queries...');
+    // Find documents with a query
+    const usersNamedJohn = await db.find(collectionName, { firstName: 'John' });
+    console.log('Users named John:', usersNamedJohn);
 
-  // Test with compound index
-  const query1 = {
-    status: { operator: 'EQ', value: 'shipped' },
-    createdAt: { operator: 'BETWEEN', value: ['2023-09-01', '2023-09-30'] },
-  };
-  const results1 = await db.find(collectionName, query1);
-  console.log(`Query with compound index returned ${results1.length} documents`);
+    // Update a document
+    await db.update(collectionName, userId1, {
+      firstName: 'Johnny',
+      lastName: 'Doe',
+      email: 'johnny.doe@example.com', // Update email
+      createdAt: user1.createdAt, // Keep the original creation date
+    });
 
-  // Test combining single-field indexes
-  const query2 = {
-    status: { operator: 'EQ', value: 'delivered' },
-    amount: { operator: 'GT', value: 500 },
-  };
-  const results2 = await db.find(collectionName, query2);
-  console.log(`Query combining indexes returned ${results2.length} documents`);
+    console.log('User 1 updated.');
 
-  // Test with no indexes (full scan)
-  const query3 = {
-    amount: { operator: 'LT', value: 300 },
-    customerName: { operator: 'EQ', value: 'John Doe' },
-  };
-  const results3 = await db.find(collectionName, query3);
-  console.log(`Query with no indexes returned ${results3.length} documents`);
+    // Verify that the unique index has been updated
+    try {
+      await db.create(collectionName, {
+        firstName: 'Jack',
+        lastName: 'Daniels',
+        email: 'johnny.doe@example.com', // Duplicate updated email
+        createdAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Expected error on duplicate updated email:', error.message);
+    }
 
-  // await stormiDB.createIndex('orders', 'createdAt', {
-  //   type: 'date',
-  //   granularity: 'daily',
-  //   createOnlyIfNotExists: true
-  // });
+    // Delete a document
+    await db.delete(collectionName, userId2);
+    console.log('User 2 deleted.');
 
-  // const results = await stormiDB.find('orders', {
-  //   createdAt: { operator: 'BETWEEN', value: ['2023-09-01', '2023-09-30'] },
-  // });
+    // Count documents
+    const userCount = await db.countDocuments(collectionName, {});
+    console.log('Total users:', userCount);
 
-  // console.log('results', results)
-  // await stormiDB.createIndex('users', 'email', { unique: true, createOnlyIfNotExists: true });
+    // Find documents using the date index
+    const today = new Date();
+    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString();
+    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString();
 
-  // await stormiDB.create('users', { email: 'user2@example.com', firstName: 'John', lastName: 'Doe' });
+    const usersCreatedToday = await db.find(collectionName, {
+      createdAt: {
+        $gte: startOfDay,
+        $lt: endOfDay,
+      },
+    });
+    console.log('Users created today:', usersCreatedToday);
 
-  // const youngAdults = await stormiDB.find('users', {email: 'user2@example.com'});
-  // console.log(youngAdults);
-
-  
-
-  // return  
-  // Create a unique index on a single field
-// await stormiDB.createIndex('users', 'email', { unique: true, createOnlyIfNotExists: true });
-
-// // Create a unique index on a group of fields
-// await stormiDB.createIndex('users', ['firstName', 'lastName'], { unique: true, createOnlyIfNotExists: true });
-
-// // Create a non-unique index
-// await stormiDB.createIndex('users', 'age', { createOnlyIfNotExists: false });
-
-// // This will throw an error if a user with the same email already exists
-// await stormiDB.create('users', { email: 'user@example.com', firstName: 'John', lastName: 'Doe' });
-
-// This will throw an error if a user with the same first name and last name combination already exists
-// await stormiDB.create('users', { email: 'another@example.com', firstName: 'John', lastName: 'Doe' });
-  
+    // Clean up: drop the collection
+    await db.dropCollection(collectionName);
+    console.log('Collection dropped.');
+  } catch (err) {
+    console.error('An error occurred during testing:', err);
+  }
 }
 
 main();

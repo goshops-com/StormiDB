@@ -1,12 +1,14 @@
 // src/StormiDB.js
 
+const { query } = require("express");
+
 class StormiDB {
   constructor(storage) {
     this.storage = storage;
   }
 
   async create(collection, data, id = null) {
-    return this.storage.create(collection, id, data);
+    return this.storage.create(collection,data);
   }
 
   async find(collection, query, options = {}) {
@@ -40,6 +42,10 @@ class StormiDB {
 
   async getCollections() {
     return this.storage.listCollections();
+  }
+
+  async countDocuments(collection, query = {}){
+    return this.storage.countDocuments(collection, query)
   }
 }
 

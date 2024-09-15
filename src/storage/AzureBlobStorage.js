@@ -35,10 +35,8 @@ class AzureBlobStorage {
     return containerClient;
   }
 
-  async create(collection, id, data) {
-    if (!id) {
-      id = ulid();
-    }
+  async create(collection, data) {
+    const id = ulid();
     data.id = id;
 
     // Check unique constraints
@@ -54,20 +52,20 @@ class AzureBlobStorage {
   async checkUniqueConstraints(collection, data) {
     const constraints = this.uniqueConstraints[collection] || [];
     for (const fields of constraints) {
-      const indexKey = Array.isArray(fields) ? fields.join('_') : fields;
-      const fullIndexKey = `${collection}_${indexKey}`;
-      const indexData = await this.getIndex(collection, indexKey);
+      const indexName = Array.isArray(fields) ? fields.join('_') : fields;
+      const indexKey = `${collection}_${indexName}`;
+      const indexData = await this.getIndex(indexKey);
       if (indexData && indexData.unique) {
         const value = this.getIndexValue(data, fields);
         if (value !== undefined && indexData.index[value] && indexData.index[value].length > 0) {
-          throw new Error(`Unique constraint violation for fields ${indexKey} with value ${value}`);
+          throw new Error(`Unique constraint violation for fields ${indexName} with value ${value}`);
         }
       }
     }
   }
 
   async read(collection, id) {
-    console.log('read', collection, id)
+    // console.log('read', collection, id)
     const containerClient = await this.getContainerClient(collection);
     const blobClient = containerClient.getBlockBlobClient(id);
     const downloadResponse = await blobClient.download();
@@ -93,57 +91,82 @@ class AzureBlobStorage {
     await this.removeFromIndexes(collection, id, oldData);
   }
 
-  async countDocuments(collection, query = {}) {
+  async countDocuments(collection, query) {
     const structuredQuery = parseQuery(query);
+  
+    // Attempt to find the best index that can satisfy the query
     const bestIndex = await this.findBestIndex(collection, structuredQuery);
   
     let candidateIds;
   
     if (bestIndex) {
       const { indexKey, indexFields, type } = bestIndex;
+  
       if (type === 'compound' && indexFields.every(field => field in structuredQuery)) {
-        // Use compound index
+        // Utilize a compound index if it fully covers all query fields
         candidateIds = await this.lookupCompoundIndex(collection, indexKey, structuredQuery);
       } else {
-        // Combine single-field indexes
+        // Attempt to combine single-field indexes for partial query coverage
         const candidateIdSets = [];
         for (const field of Object.keys(structuredQuery)) {
           const ids = await this.lookupIndexIds(collection, field, structuredQuery[field]);
           if (ids) {
             candidateIdSets.push(new Set(ids));
           } else {
-            // If any field doesn't have an index, we need to do a full scan
+            // If any field lacks an index, fallback to a full collection scan
             candidateIds = null;
             break;
           }
         }
   
         if (candidateIdSets.length > 0) {
+          // Intersect the sets of candidate IDs to find common documents matching all indexed fields
           candidateIds = this.intersectSets(candidateIdSets);
         }
       }
     }
   
     if (!candidateIds) {
-      // No indexes or couldn't combine indexes, perform full scan
+      // If no suitable index is found, perform a full collection scan to gather all document IDs
       candidateIds = await this.fullCollectionScan(collection);
     }
   
-    // If the query is empty, we can return the count immediately
-    if (Object.keys(structuredQuery).length === 0) {
-      return candidateIds.size;
+    // Convert the Set of candidate IDs to a sorted array for consistent ordering
+    const sortedIds = Array.from(candidateIds).sort();
+  
+    let count = 0;
+  
+    // Iterate over each ID and evaluate the corresponding document against the query
+    for (const id of sortedIds) {
+      try {
+        if (typeof id !== 'string') {
+          // Skip invalid IDs
+          continue;
+        }
+  
+        // Read the document by its ID
+        const doc = await this.read(collection, id);
+  
+        if (doc && Object.entries(structuredQuery).every(([field, condition]) =>
+          evaluateCondition(doc, field, condition)
+        )) {
+          // Increment the count if the document satisfies all query conditions
+          count += 1;
+        }
+      } catch (error) {
+        if (error.statusCode === 404) {
+          console.warn(`Document with id ${id} not found in collection ${collection}. It may have been deleted.`);
+        } else {
+          console.error(`Error reading document with id ${id} in collection ${collection}:`, error);
+        }
+        // Continue counting despite errors with individual documents
+      }
     }
   
-    // Otherwise, we need to fetch and filter the documents
-    const documents = await Promise.all(Array.from(candidateIds).map(id => this.read(collection, id)));
-    const count = documents.filter(doc =>
-      Object.entries(structuredQuery).every(([field, condition]) =>
-        evaluateCondition(doc, field, condition)
-      )
-    ).length;
-  
+    console.log('count', count);
     return count;
   }
+  
 
   async find(collection, query, options = {}) {
     const { limit = Infinity, offset = 0, after = null } = options;
@@ -199,7 +222,7 @@ class AzureBlobStorage {
       paginatedIds.map(async id => {
         try {
           if (typeof id !== 'string') {
-            console.error(`Invalid document ID in collection ${collection}: ${typeof id} ${JSON.stringify(id)}`);
+            // Skip invalid IDs
             return null;
           }
           return await this.read(collection, id);
@@ -213,8 +236,7 @@ class AzureBlobStorage {
         }
       })
     );
-
-
+  
     // Filter out null documents (those that weren't found) and apply query filtering
     const filteredDocuments = documents
       .filter(doc => doc !== null)
@@ -226,6 +248,7 @@ class AzureBlobStorage {
   
     return filteredDocuments;
   }
+  
 
   intersectSets(sets) {
     if (sets.length === 0) return new Set();
@@ -233,13 +256,14 @@ class AzureBlobStorage {
   }
   
   async lookupIndexIds(collection, field, condition) {
-    const indexData = await this.getIndex(collection, field);
+    const indexKey = `${collection}_${field}`;
+    const indexData = await this.getIndex(indexKey);
     if (!indexData) return null;
   
     const { type } = indexData;
     if (type === 'date') {
-      const docs = await this.lookupDateIndex(indexData, condition);
-      return docs.map(doc => doc.id);
+      const matchingIds = await this.lookupDateIndex(collection, indexData, condition);
+      return matchingIds;
     } else {
       // Default index
       const index = indexData.index;
@@ -257,6 +281,7 @@ class AzureBlobStorage {
       return matchingIds;
     }
   }
+  
 
   async lookupCompoundIndex(collection, indexKey, structuredQuery) {
     const indexData = await this.getIndex(collection, indexKey);
@@ -545,20 +570,23 @@ class AzureBlobStorage {
 
   getIndexValue(doc, fields) {
     if (Array.isArray(fields)) {
-      return fields.map(field => doc[field]).join('_');
+      const values = fields.map(field => doc[field]);
+      if (values.includes(undefined)) return undefined;
+      return values.join('_');
     }
     return doc[fields];
   }
 
-  async getIndex(collection, field) {
-    console.log('getIndex', `${collection}_${field}`);
-    const indexBlobClient = this.indexContainer.getBlockBlobClient(`${collection}_${field}`);
+  async getIndex(indexKey) {
+    console.log('Attempting to get index:', indexKey);
+    const indexBlobClient = this.indexContainer.getBlockBlobClient(indexKey);
     try {
       const downloadResponse = await indexBlobClient.download();
       const downloaded = await streamToBuffer(downloadResponse.readableStreamBody);
+      console.log('Index found:', indexKey);
       return JSON.parse(downloaded.toString());
     } catch (error) {
-      console.log('error', error)
+      console.log('Error getting index:', error.message);
       if (error.statusCode === 404) {
         return null;
       }
@@ -567,14 +595,16 @@ class AzureBlobStorage {
   }
 
   async updateIndexes(collection, id, newData, oldData) {
+    console.log('Updating indexes for collection:', collection);
+
     const indexBlobs = this.indexContainer.listBlobsFlat({ prefix: `${collection}_` });
+
     for await (const indexBlob of indexBlobs) {
-      const indexKey = indexBlob.name; // Use the full blob name as the indexKey
-      let indexData = await this.getIndexWithETag(collection, indexKey);
-      
-      // Skip this index if it doesn't exist
+      const indexKey = indexBlob.name;
+      console.log('Processing index:', indexKey);
+      let indexData = await this.getIndexWithETag(indexKey);
       if (!indexData) {
-        console.warn(`Index ${indexKey} not found for collection ${collection}. Skipping.`);
+        console.warn(`Index ${indexKey} not found. Skipping.`);
         continue;
       }
   
@@ -618,14 +648,17 @@ class AzureBlobStorage {
   }
 
   async getIndexWithETag(indexKey) {
+    console.log(`Getting index with ETag: ${indexKey}`);
     const indexBlobClient = this.indexContainer.getBlockBlobClient(indexKey);
     try {
       const downloadResponse = await indexBlobClient.download();
       const downloaded = await streamToBuffer(downloadResponse.readableStreamBody);
       const indexData = JSON.parse(downloaded.toString());
-      indexData.eTag = downloadResponse.etag; // Get ETag
+      indexData.eTag = downloadResponse.etag;
+      console.log(`Index found: ${indexKey}`);
       return indexData;
     } catch (error) {
+      console.log(`Error getting index: ${indexKey}`, error.message);
       if (error.statusCode === 404) {
         return null;
       }
@@ -757,8 +790,12 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
   async removeFromIndexes(collection, id, oldData) {
     const indexBlobs = this.indexContainer.listBlobsFlat({ prefix: `${collection}_` });
     for await (const indexBlob of indexBlobs) {
-      const indexKey = indexBlob.name.substring(this.indexContainer.containerName.length + 1);
-      let indexData = await this.getIndexWithETag(collection, indexKey);
+      const indexKey = indexBlob.name;
+      let indexData = await this.getIndexWithETag(indexKey);
+      if (!indexData) {
+        console.warn(`Index ${indexKey} not found. Skipping.`);
+        continue;
+      }
       const { type, fields, eTag } = indexData;
   
       const maxRetries = 5;
@@ -857,37 +894,31 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
   }
 
   async findBestIndex(collection, structuredQuery) {
-  const indexBlobs = this.indexContainer.listBlobsFlat({ prefix: `${collection}_` });
-  let bestIndex = null;
-  let bestIndexFields = [];
-  let maxFieldsMatched = 0;
-
-  for await (const indexBlob of indexBlobs) {
-    const indexKey = indexBlob.name.split('_')[1];
-    const indexData = await this.getIndex(collection, indexKey);
-    const { type, fields } = indexData;
-
-    let indexFields;
-    if (type === 'compound' || Array.isArray(fields)) {
-      indexFields = fields;
-    } else {
-      indexFields = [indexKey.split('_').slice(1).join('_')];
+    const indexBlobs = this.indexContainer.listBlobsFlat({ prefix: `${collection}_` });
+    let bestIndex = null;
+    let maxFieldsMatched = 0;
+  
+    for await (const indexBlob of indexBlobs) {
+      const indexKey = indexBlob.name;
+      const indexData = await this.getIndex(indexKey);
+      if (!indexData) continue; // Skip if index data is not found
+      const { type, fields } = indexData;
+      const indexFields = Array.isArray(fields) ? fields : [fields];
+  
+      const fieldsMatched = indexFields.filter(field => field in structuredQuery).length;
+  
+      if (fieldsMatched > maxFieldsMatched) {
+        maxFieldsMatched = fieldsMatched;
+        bestIndex = { indexKey, indexFields, type };
+      }
+  
+      if (fieldsMatched === Object.keys(structuredQuery).length) {
+        break; // Found an index matching all query fields
+      }
     }
-
-    const fieldsMatched = indexFields.filter(field => field in structuredQuery).length;
-
-    if (fieldsMatched > maxFieldsMatched) {
-      maxFieldsMatched = fieldsMatched;
-      bestIndex = { indexKey, indexFields, type };
-    }
-
-    if (fieldsMatched === Object.keys(structuredQuery).length) {
-      break; // Found an index matching all query fields
-    }
+  
+    return bestIndex;
   }
-
-  return bestIndex;
-}
 
   async lookupIndex(collection, field, condition) {
     const indexData = await this.getIndex(collection, field);
@@ -895,7 +926,7 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
 
     const { type } = indexData;
     if (type === 'date') {
-      return this.lookupDateIndex(indexData, condition);
+      return this.lookupDateIndex(collection, indexData, condition);
     } else {
       // Existing logic for non-date indexes
       const index = indexData.index;
@@ -914,13 +945,13 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
     }
   }
 
-  async lookupDateIndex(indexData, condition) {
+  async lookupDateIndex(collection, indexData, condition) {
     const { index, granularity } = indexData;
     const entries = index; // entries is an array of { dateValue, ids }
     let matchingIds = [];
-
+  
     const formatConditionValue = (value) => this.formatDateValue(value, granularity);
-
+  
     // Implement binary search functions
     function binarySearchLeft(arr, target) {
       let left = 0;
@@ -935,7 +966,7 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
       }
       return left;
     }
-
+  
     function binarySearchRight(arr, target) {
       let left = 0;
       let right = arr.length;
@@ -949,7 +980,7 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
       }
       return left;
     }
-
+  
     if (condition.operator === 'EQ') {
       const formattedValue = formatConditionValue(condition.value);
       const idx = binarySearchLeft(entries, formattedValue);
@@ -990,19 +1021,18 @@ async updateDateIndex(indexData, id, newData, oldData, fields, indexBlob, eTag) 
         matchingIds.push(...entries[i].ids);
       }
     }
-
-    return Promise.all(matchingIds.map(id => this.read(collection, id)));
+  
+    return matchingIds;
   }
 
   async fullCollectionScan(collection) {
     const containerClient = await this.getContainerClient(collection);
     const blobs = containerClient.listBlobsFlat();
-    const documents = [];
+    const ids = new Set();
     for await (const blob of blobs) {
-      const doc = await this.read(collection, blob.name);
-      documents.push(doc);
+      ids.add(blob.name);
     }
-    return documents;
+    return ids;
   }
 
   async listCollections() {

@@ -65,12 +65,24 @@ class AzureBlobStorage {
   }
 
   async read(collection, id) {
-    // console.log('read', collection, id)
-    const containerClient = await this.getContainerClient(collection);
-    const blobClient = containerClient.getBlockBlobClient(id);
-    const downloadResponse = await blobClient.download();
-    const downloaded = await streamToBuffer(downloadResponse.readableStreamBody);
-    return JSON.parse(downloaded.toString());
+    try {
+      const containerClient = await this.getContainerClient(collection);
+      const blobClient = containerClient.getBlockBlobClient(id);
+      
+      // Check if the blob exists
+      const exists = await blobClient.exists();
+      if (!exists) {
+        return null;
+      }
+      
+      const downloadResponse = await blobClient.download();
+      const downloaded = await streamToBuffer(downloadResponse.readableStreamBody);
+      return JSON.parse(downloaded.toString());
+    } catch (error) {
+      // If there's an error (e.g., the blob doesn't exist), return null
+      console.error('Error reading blob:', error);
+      return null;
+    }
   }
 
   async update(collection, id, data) {

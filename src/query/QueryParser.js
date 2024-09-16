@@ -1,15 +1,65 @@
 // src/query/QueryParser.js
 
+// src/query/QueryParser.js
+
+function operatorToTagCondition(field, condition, storageInstance) {
+  console.log('Field:', field, 'Condition:', JSON.stringify(condition));
+
+  if (!condition || typeof condition !== 'object') {
+    console.log(`Invalid condition for field ${field}:`, condition);
+    return null;
+  }
+
+  // If condition is a direct value (e.g., { city: "New York" })
+  if (!condition.operator) {
+    condition = { operator: Operator.EQ, value: condition };
+  }
+
+  const operator = operatorToTagOperator[condition.operator];
+
+  if (!operator) {
+    console.log(`Unsupported operator for field ${field}:`, condition.operator);
+    return null;
+  }
+
+  // Use storageInstance.encodeTagValueForField to ensure consistent encoding/hashing
+  const encodeValue = (val) => {
+    return storageInstance.encodeTagValueForField(field, val);
+  };
+
+  let value = condition.value;
+
+  switch (condition.operator) {
+    case Operator.EQ:
+      return `"${field}" = '${encodeValue(value)}'`;
+    case Operator.GT:
+      return `"${field}" > '${encodeValue(value)}'`;
+    case Operator.LT:
+      return `"${field}" < '${encodeValue(value)}'`;
+    case Operator.GTE:
+      return `"${field}" >= '${encodeValue(value)}'`;
+    case Operator.LTE:
+      return `"${field}" <= '${encodeValue(value)}'`;
+    case Operator.BETWEEN:
+      if (!Array.isArray(value) || value.length !== 2) {
+        console.log(`Invalid value for BETWEEN operator on field ${field}:`, value);
+        return null;
+      }
+      return `"${field}" > '${encodeValue(value[0])}' AND "${field}" < '${encodeValue(value[1])}'`;
+    default:
+      console.log(`Unsupported operator ${condition.operator} for field ${field}`);
+      return null;
+  }
+}
+
+// Remove IN and NIN from Operator and operatorMap
 const Operator = {
   EQ: 'EQ',
   GT: 'GT',
   LT: 'LT',
   GTE: 'GTE',
   LTE: 'LTE',
-  IN: 'IN',
-  NIN: 'NIN',
   BETWEEN: 'BETWEEN',
-  // Add more operators as needed
 };
 
 const operatorMap = {
@@ -18,10 +68,13 @@ const operatorMap = {
   $lt: Operator.LT,
   $gte: Operator.GTE,
   $lte: Operator.LTE,
-  $in: Operator.IN,
-  $nin: Operator.NIN,
   $between: Operator.BETWEEN,
-  // Add more mappings as needed
+};
+
+module.exports = {
+  Operator,
+  parseQuery,
+  operatorToTagCondition,
 };
 
 const operatorToTagOperator = {
@@ -72,44 +125,7 @@ function parseQuery(query) {
   return structuredQuery;
 }
 
-function operatorToTagCondition(field, condition, storageInstance) {
-  const operator = operatorToTagOperator[condition.operator];
 
-  if (!operator) {
-    // Operator not supported for tag queries
-    return null;
-  }
-
-  // Use storageInstance.encodeTagValueForField to ensure consistent encoding/hashing
-  const encodeValue = (val) => {
-    return storageInstance.encodeTagValueForField(field, val);
-  };
-
-  // Escape value for SQL expression
-  const escapeValue = (val) => {
-    return `'${val.replace(/'/g, "''")}'`;
-  };
-
-  let value = condition.value;
-
-  if (condition.operator === Operator.IN) {
-    if (!Array.isArray(value)) {
-      return null;
-    }
-    const values = value
-      .map((val) => escapeValue(encodeValue(val)))
-      .join(', ');
-    return `\"${field}\" IN (${values})`;
-  } else if (condition.operator === Operator.BETWEEN) {
-    if (!Array.isArray(value) || value.length !== 2) {
-      return null;
-    }
-    const [start, end] = value.map((val) => escapeValue(encodeValue(val)));
-    return `\"${field}\" BETWEEN ${start} AND ${end}`;
-  } else {
-    return `\"${field}\" ${operator} ${escapeValue(encodeValue(value))}`;
-  }
-}
 
 module.exports = {
   Operator,

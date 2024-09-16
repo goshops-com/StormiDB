@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const AzureBlobStorage = require('./src/storage/AzureBlobStorage');
+const AzureBlobStorage = require('../src/storage/AzureBlobStorage');
 
 const connectionString = process.env.AZURE_BLOB_STORAGE;
 const storage = new AzureBlobStorage(connectionString);

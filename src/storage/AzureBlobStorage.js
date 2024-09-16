@@ -1,7 +1,7 @@
 // src/storage/AzureBlobStorage.js
 
 const { BlobServiceClient } = require('@azure/storage-blob');
-const { parseQuery, operatorToTagCondition } = require('../query/QueryParser');
+const { parseQuery, operatorToTagCondition, Operator } = require('../query/QueryParser');
 const { ulid } = require('ulid');
 const { encodeTagValue, decodeTagValue, hashTagValue } = require('./tagEncoding');
 const crypto = require('crypto');
@@ -53,20 +53,26 @@ class AzureBlobStorage {
         // Load existing index definitions
         const indexDefs = await this.loadIndexDefinitions(collection);
   
-        // Update index definitions
+        // Create a compound index identifier
+        const indexId = fields.join('_');
+  
+        if (indexDefs.indexes.has(indexId)) {
+          // Update existing index
+          const existingIndex = indexDefs.indexes.get(indexId);
+          existingIndex.unique = unique;
+        } else {
+          // Add new index
+          if (indexDefs.indexes.size >= 10) {
+            throw new Error(`Cannot create more than 10 indexes per collection due to tag limit.`);
+          }
+          indexDefs.indexes.set(indexId, { fields, unique });
+        }
+  
+        // Update individual field indexing information
         for (const field of fields) {
-          if (indexDefs.indexedFields.has(field)) {
-            if (unique) {
-              indexDefs.uniqueFields.add(field);
-            }
-          } else {
-            if (indexDefs.indexedFields.size >= 10) {
-              throw new Error(`Cannot index more than 10 fields per collection due to tag limit.`);
-            }
-            indexDefs.indexedFields.add(field);
-            if (unique) {
-              indexDefs.uniqueFields.add(field);
-            }
+          indexDefs.indexedFields.add(field);
+          if (unique) {
+            indexDefs.uniqueFields.add(field);
           }
         }
   
@@ -105,6 +111,7 @@ class AzureBlobStorage {
       // Convert arrays back to sets
       indexDefs.indexedFields = new Set(indexDefs.indexedFields);
       indexDefs.uniqueFields = new Set(indexDefs.uniqueFields);
+      indexDefs.indexes = new Map(Object.entries(indexDefs.indexes || {}));
       indexDefs.eTag = downloadResponse.etag;
 
       // Cache the index definitions
@@ -116,6 +123,7 @@ class AzureBlobStorage {
         const indexDefs = {
           indexedFields: new Set(),
           uniqueFields: new Set(),
+          indexes: new Map(),
           eTag: undefined,
         };
         this.indexDefinitions[collection] = indexDefs;
@@ -134,6 +142,7 @@ class AzureBlobStorage {
     const data = {
       indexedFields: Array.from(indexDefs.indexedFields),
       uniqueFields: Array.from(indexDefs.uniqueFields),
+      indexes: Object.fromEntries(indexDefs.indexes),
     };
 
     const content = JSON.stringify(data);
@@ -166,28 +175,7 @@ class AzureBlobStorage {
     }
   }
 
-  async create(collection, data, existingId = undefined) {
-    const id = existingId || ulid();
-    data.id = id;
-
-    const containerClient = await this.getContainerClient(collection);
-    const blobClient = containerClient.getBlockBlobClient(id);
-
-    // Load index definitions
-    const indexDefs = await this.loadIndexDefinitions(collection);
-
-    // Prepare tags with only indexed fields
-    const tags = this.prepareTags(collection, data, indexDefs);
-
-    // Check for unique constraints
-    await this.checkUniqueConstraintsOnCreate(collection, data, tags, indexDefs);
-
-    await blobClient.upload(JSON.stringify(data), Buffer.byteLength(JSON.stringify(data)), {
-      tags,
-    });
-
-    return id;
-  }
+  
 
   async checkUniqueConstraintsOnCreate(collection, data, tags, indexDefs) {
     if (!indexDefs.uniqueFields || indexDefs.uniqueFields.size === 0) {
@@ -235,36 +223,7 @@ class AzureBlobStorage {
     }
   }
 
-  async update(collection, id, data) {
-    const containerClient = await this.getContainerClient(collection);
-    const blobClient = containerClient.getBlockBlobClient(id);
-
-    // Check if the blob exists
-    const exists = await blobClient.exists();
-    if (!exists) {
-      throw new Error(`Document with id ${id} does not exist in collection ${collection}.`);
-    }
-
-    // Read the existing data
-    const existingData = await this.read(collection, id);
-
-    // Load index definitions
-    const indexDefs = await this.loadIndexDefinitions(collection);
-
-    data.id = id;
-
-    // Prepare tags with only indexed fields
-    const tags = this.prepareTags(collection, data, indexDefs);
-
-    // Check for unique constraints
-    await this.checkUniqueConstraintsOnUpdate(collection, data, existingData, indexDefs);
-
-    // Overwrite the blob with new data and tags
-    await blobClient.upload(JSON.stringify(data), Buffer.byteLength(JSON.stringify(data)), {
-      overwrite: true,
-      tags,
-    });
-  }
+  
 
   async checkUniqueConstraintsOnUpdate(collection, newData, existingData, indexDefs) {
     if (!indexDefs.uniqueFields || indexDefs.uniqueFields.size === 0) {
@@ -370,68 +329,22 @@ class AzureBlobStorage {
     return regex.test(value);
   }
 
-  async find(collection, query, options = {}) {
-    const { limit = Infinity, offset = 0, batchSize = 100 } = options;
-    const structuredQuery = parseQuery(query);
-    const containerClient = await this.getContainerClient(collection);
   
-    // Load index definitions
-    const indexDefs = await this.loadIndexDefinitions(collection);
-  
-    // Convert the structured query to a tag filter SQL expression
-    const tagFilterSqlExpression = this.convertQueryToTagFilter(structuredQuery, collection, indexDefs);
-  
-    let iterator;
-    if (tagFilterSqlExpression) {
-      iterator = containerClient.findBlobsByTags(tagFilterSqlExpression);
-    } else {
-      // If no query is provided or cannot be converted, list all blobs
-      iterator = containerClient.listBlobsFlat();
-    }
-    
-    const results = [];
-    let skipped = 0;
-    let batchBlobs = [];
-  
-    for await (const blob of iterator) {
-      if (blob.name.startsWith('__')) {
-        continue; // Skip system blobs
-      }
-    
-      if (skipped < offset) {
-        skipped++;
-        continue;
-      }
-  
-      batchBlobs.push(blob.name);
-  
-      if (batchBlobs.length === batchSize) {
-        const batchDocs = await Promise.all(
-          batchBlobs.map(blobName => this.read(collection, blobName))
-        );
 
-        results.push(...batchDocs.filter(doc => doc !== null));
-        batchBlobs = [];
+  findUsableCompoundIndex(structuredQuery, indexDefs) {
+    const queryFields = Object.keys(structuredQuery);
+    let bestIndex = null;
+    let maxMatchingFields = 0;
   
-        if (results.length >= limit) {
-          results.length = limit; // Trim excess results
-          break;
-        }
+    for (const [indexId, indexInfo] of indexDefs.indexes) {
+      const matchingFields = indexInfo.fields.filter(field => queryFields.includes(field));
+      if (matchingFields.length > maxMatchingFields) {
+        maxMatchingFields = matchingFields.length;
+        bestIndex = indexInfo;
       }
     }
   
-    // Process any remaining blobs in the last batch
-    if (batchBlobs.length > 0) {
-      const batchDocs = await Promise.all(
-        batchBlobs.map(blobName => this.read(collection, blobName))
-      );
-      results.push(...batchDocs.filter(doc => doc !== null));
-      if (results.length > limit) {
-        results.length = limit; // Trim excess results
-      }
-    }
-
-    return results;
+    return bestIndex;
   }
 
   async countDocuments(collection, query) {
@@ -464,6 +377,139 @@ class AzureBlobStorage {
     return count;
   }
 
+  
+
+  async create(collection, data, existingId = undefined) {
+    const id = existingId || ulid();
+    data.id = id;
+  
+    const containerClient = await this.getContainerClient(collection);
+    const blobClient = containerClient.getBlockBlobClient(id);
+  
+    // Load index definitions
+    const indexDefs = await this.loadIndexDefinitions(collection);
+  
+    // Prepare tags with only indexed fields
+    const tags = this.prepareTags(collection, data, indexDefs);
+  
+    // Check for unique constraints
+    await this.checkUniqueConstraintsOnCreate(collection, data, tags, indexDefs);
+  
+    // Ensure tags are properly formatted for Azure Blob Storage
+    const formattedTags = this.formatTags(tags);
+  
+    console.log('Creating document with tags:', formattedTags);
+  
+    await blobClient.upload(JSON.stringify(data), Buffer.byteLength(JSON.stringify(data)), {
+      tags: formattedTags,
+    });
+  
+    return id;
+  }
+  
+  async update(collection, id, data) {
+    const containerClient = await this.getContainerClient(collection);
+    const blobClient = containerClient.getBlockBlobClient(id);
+  
+    // Check if the blob exists
+    const exists = await blobClient.exists();
+    if (!exists) {
+      throw new Error(`Document with id ${id} does not exist in collection ${collection}.`);
+    }
+  
+    // Read the existing data
+    const existingData = await this.read(collection, id);
+  
+    // Load index definitions
+    const indexDefs = await this.loadIndexDefinitions(collection);
+  
+    data.id = id;
+  
+    // Prepare tags with only indexed fields
+    const tags = this.prepareTags(collection, data, indexDefs);
+  
+    // Check for unique constraints
+    await this.checkUniqueConstraintsOnUpdate(collection, data, existingData, indexDefs);
+  
+    // Ensure tags are properly formatted for Azure Blob Storage
+    const formattedTags = this.formatTags(tags);
+  
+    console.log('Updating document with tags:', formattedTags);
+  
+    // Overwrite the blob with new data and tags
+    await blobClient.upload(JSON.stringify(data), Buffer.byteLength(JSON.stringify(data)), {
+      overwrite: true,
+      tags: formattedTags,
+    });
+  }
+  
+  async find(collection, query, options = {}) {
+    console.log(`\nQuery:`, JSON.stringify(query));
+  
+    const { limit = Infinity, offset = 0, batchSize = 100 } = options;
+    const structuredQuery = parseQuery(query);
+    const containerClient = await this.getContainerClient(collection);
+  
+    // Load index definitions
+    const indexDefs = await this.loadIndexDefinitions(collection);
+  
+    // Convert the structured query to a tag filter SQL expression
+    const tagFilterSqlExpression = this.convertQueryToTagFilter(structuredQuery, collection, indexDefs);
+  
+    console.log('Azure Blob Storage tag filter:', tagFilterSqlExpression);
+  
+    let results = [];
+  
+    if (Object.keys(structuredQuery).length === 0) {
+      console.log('Empty query, paginating blobs');
+      const iterator = containerClient.listBlobsFlat().byPage({ maxPageSize: batchSize });
+      for await (const page of iterator) {
+        for (const blob of page.segment.blobItems) {
+          if (blob.name.startsWith('__')) continue;
+          if (results.length >= offset + limit) break;
+          const doc = await this.read(collection, blob.name);
+          if (doc) results.push(doc);
+        }
+        if (results.length >= offset + limit) break;
+      }
+    } else if (tagFilterSqlExpression) {
+      console.log('Using tag-based query');
+      const iterator = containerClient.findBlobsByTags(tagFilterSqlExpression);
+      for await (const blob of iterator) {
+        if (blob.name.startsWith('__')) continue;
+        console.log('Found blob:', blob.name);
+        const doc = await this.read(collection, blob.name);
+        if (doc) results.push(doc);
+      }
+    } else {
+      console.log('No usable indexes, performing full scan with in-memory filtering');
+      const iterator = containerClient.listBlobsFlat();
+      for await (const blob of iterator) {
+        if (blob.name.startsWith('__')) continue;
+        const doc = await this.read(collection, blob.name);
+        console.log('Checking document:', doc);
+        if (doc && this.applyInMemoryFilter([doc], structuredQuery).length > 0) {
+          console.log('Document matched:', doc);
+          results.push(doc);
+        }
+      }
+    }
+  
+    console.log(`Found ${results.length} documents before pagination`);
+    
+    // Apply offset and limit
+    results = results.slice(offset, offset + limit);
+  
+    console.log(`Returning ${results.length} documents after pagination`);
+    return results;
+  }
+  
+  formatTags(tags) {
+    return Object.fromEntries(
+      Object.entries(tags).map(([key, value]) => [key, value.toString()])
+    );
+  }
+  
   convertQueryToTagFilter(structuredQuery, collection, indexDefs) {
     if (Object.keys(structuredQuery).length === 0) {
       return null;
@@ -474,34 +520,66 @@ class AzureBlobStorage {
   
     for (const [field, fieldConditions] of Object.entries(structuredQuery)) {
       if (!indexedFields.has(field)) {
-        // Cannot use tag filters for fields that are not indexed
-        return null;
+        console.log(`Field ${field} is not indexed, skipping for tag filter`);
+        continue;
       }
   
-      if (Array.isArray(fieldConditions)) {
-        // Multiple conditions for the same field
-        for (const condition of fieldConditions) {
-          const operatorCondition = operatorToTagCondition(field, condition, this);
-          if (operatorCondition) {
-            conditions.push(operatorCondition);
-          } else {
-            // Cannot represent this condition with blob index tags
-            return null;
-          }
-        }
-      } else {
-        // Single condition for the field
-        const operatorCondition = operatorToTagCondition(field, fieldConditions, this);
+      const conditionArray = Array.isArray(fieldConditions) ? fieldConditions : [fieldConditions];
+      for (const condition of conditionArray) {
+        const operatorCondition = operatorToTagCondition(field, condition, this);
         if (operatorCondition) {
           conditions.push(operatorCondition);
         } else {
-          // Cannot represent this condition with blob index tags
-          return null;
+          console.log(`Could not create tag condition for field ${field}:`, condition);
         }
       }
     }
   
-    return conditions.join(' AND ');
+    return conditions.length > 0 ? conditions.join(' AND ') : null;
+  }
+
+  applyInMemoryFilter(docs, structuredQuery) {
+    return docs.filter(doc => {
+      for (const [field, conditions] of Object.entries(structuredQuery)) {
+        const conditionArray = Array.isArray(conditions) ? conditions : [conditions];
+        
+        for (const condition of conditionArray) {
+          const { operator, value } = condition;
+          const docValue = doc[field];
+
+          switch (operator) {
+            case Operator.EQ:
+              if (docValue !== value) return false;
+              break;
+            case Operator.GT:
+              if (docValue <= value) return false;
+              break;
+            case Operator.LT:
+              if (docValue >= value) return false;
+              break;
+            case Operator.GTE:
+              if (docValue < value) return false;
+              break;
+            case Operator.LTE:
+              if (docValue > value) return false;
+              break;
+            case Operator.IN:
+              if (!Array.isArray(value) || !value.includes(docValue)) return false;
+              break;
+            case Operator.NIN:
+              if (Array.isArray(value) && value.includes(docValue)) return false;
+              break;
+            case Operator.BETWEEN:
+              if (!Array.isArray(value) || value.length !== 2 || docValue < value[0] || docValue > value[1]) return false;
+              break;
+            default:
+              console.log(`Unsupported operator ${operator} for in-memory filtering`);
+              return false;
+          }
+        }
+      }
+      return true;
+    });
   }
 
   async listCollections() {

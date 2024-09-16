@@ -6,6 +6,12 @@ const { ulid } = require('ulid');
 const { encodeTagValue, decodeTagValue, hashTagValue } = require('./tagEncoding');
 const crypto = require('crypto');
 
+const DEFAULT_RETRY_OPTIONS = {
+  maxRetries: 5,
+  initialDelay: 100, // milliseconds
+  maxDelay: 5000, // milliseconds
+};
+
 class AzureBlobStorage {
   constructor(connectionString, options = {}) {
     this.prefix = options.prefix || '';
@@ -33,36 +39,54 @@ class AzureBlobStorage {
   }
 
   async createIndex(collection, fields, options = {}) {
-    if (!Array.isArray(fields)) {
-      fields = [fields];
-    }
-
-    const { unique = false } = options;
-
-    // Load existing index definitions
-    const indexDefs = await this.loadIndexDefinitions(collection);
-
-    // Update index definitions
-    for (const field of fields) {
-      // Check if field is already indexed
-      if (indexDefs.indexedFields.has(field)) {
-        // Update unique constraint if needed
-        if (unique) {
-          indexDefs.uniqueFields.add(field);
+    const retryOptions = { ...DEFAULT_RETRY_OPTIONS, ...options.retry };
+    let attempt = 0;
+  
+    while (true) {
+      try {
+        if (!Array.isArray(fields)) {
+          fields = [fields];
         }
-      } else {
-        if (indexDefs.indexedFields.size >= 10) {
-          throw new Error(`Cannot index more than 10 fields per collection due to tag limit.`);
+  
+        const { unique = false } = options;
+  
+        // Load existing index definitions
+        const indexDefs = await this.loadIndexDefinitions(collection);
+  
+        // Update index definitions
+        for (const field of fields) {
+          if (indexDefs.indexedFields.has(field)) {
+            if (unique) {
+              indexDefs.uniqueFields.add(field);
+            }
+          } else {
+            if (indexDefs.indexedFields.size >= 10) {
+              throw new Error(`Cannot index more than 10 fields per collection due to tag limit.`);
+            }
+            indexDefs.indexedFields.add(field);
+            if (unique) {
+              indexDefs.uniqueFields.add(field);
+            }
+          }
         }
-        indexDefs.indexedFields.add(field);
-        if (unique) {
-          indexDefs.uniqueFields.add(field);
+  
+        // Save updated index definitions
+        await this.saveIndexDefinitions(collection, indexDefs);
+        
+        // If we reach here, the operation was successful
+        return;
+      } catch (error) {
+        if (error.message.includes("Concurrent modification detected") && attempt < retryOptions.maxRetries) {
+          attempt++;
+          const delay = Math.min(retryOptions.initialDelay * Math.pow(2, attempt), retryOptions.maxDelay);
+          console.log(`Retrying createIndex for collection "${collection}" after ${delay}ms (attempt ${attempt})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          // If it's not a concurrency error or we've exceeded max retries, throw the error
+          throw error;
         }
       }
     }
-
-    // Save updated index definitions
-    await this.saveIndexDefinitions(collection, indexDefs);
   }
 
   async loadIndexDefinitions(collection) {

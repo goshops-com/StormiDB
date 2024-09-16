@@ -347,7 +347,7 @@ class AzureBlobStorage {
   }
 
   async find(collection, query, options = {}) {
-    const { limit = Infinity, offset = 0 } = options;
+    const { limit = Infinity, offset = 0, batchSize = 100 } = options;
     const structuredQuery = parseQuery(query);
     const containerClient = await this.getContainerClient(collection);
   
@@ -365,8 +365,9 @@ class AzureBlobStorage {
       iterator = containerClient.listBlobsFlat();
     }
   
-    const blobs = [];
+    const results = [];
     let skipped = 0;
+    let batchBlobs = [];
   
     for await (const blob of iterator) {
       if (blob.name.startsWith('__')) {
@@ -378,17 +379,24 @@ class AzureBlobStorage {
         continue;
       }
   
-      const doc = await this.read(collection, blob.name);
-      if (doc) {
-        blobs.push(doc);
-      }
+      batchBlobs.push(blob.name);
   
-      if (blobs.length >= limit) {
-        break;
+      if (batchBlobs.length === batchSize || iterator.isDone) {
+        const batchDocs = await Promise.all(
+          batchBlobs.map(blobName => this.read(collection, blobName))
+        );
+        
+        results.push(...batchDocs.filter(doc => doc !== null));
+        batchBlobs = [];
+  
+        if (results.length >= limit) {
+          results.length = limit; // Trim excess results
+          break;
+        }
       }
     }
   
-    return blobs;
+    return results;
   }
 
   async countDocuments(collection, query) {

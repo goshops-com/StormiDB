@@ -6,7 +6,7 @@ class StormiDB {
   constructor(storage) {
     this.storage = storage;
   }
-
+  
   async create(collection, data, id = null) {
     return this.storage.create(collection,data);
   }

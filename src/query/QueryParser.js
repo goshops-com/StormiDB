@@ -24,37 +24,43 @@ const operatorMap = {
   // Add more mappings as needed
 };
 
-const operatorFunctions = {
-  [Operator.EQ]: (a, b) => a === b,
-  [Operator.GT]: (a, b) => a > b,
-  [Operator.LT]: (a, b) => a < b,
-  [Operator.GTE]: (a, b) => a >= b,
-  [Operator.LTE]: (a, b) => a <= b,
-  [Operator.IN]: (a, b) => Array.isArray(b) && b.includes(a),
-  [Operator.NIN]: (a, b) => Array.isArray(b) && !b.includes(a),
-  [Operator.BETWEEN]: (a, b) => a >= b[0] && a <= b[1],
-  // Add more operator functions as needed
+const operatorToTagOperator = {
+  [Operator.EQ]: '=',
+  [Operator.GT]: '>',
+  [Operator.LT]: '<',
+  [Operator.GTE]: '>=',
+  [Operator.LTE]: '<=',
+  [Operator.IN]: 'IN',
+  [Operator.BETWEEN]: 'BETWEEN',
+  // Note: Azure Blob Storage doesn't support NIN directly
 };
+
+const { encodeTagValue, hashTagValue } = require('../storage/tagEncoding');
 
 function parseQuery(query) {
   const structuredQuery = {};
 
   for (const [field, condition] of Object.entries(query)) {
-    if (typeof condition === 'object' && condition !== null) {
-      const parsedCondition = {
-        operator: Operator.EQ,
-        value: condition,
-      };
+    if (typeof condition === 'object' && condition !== null && !Array.isArray(condition)) {
+      const parsedConditions = [];
 
       for (const [op, value] of Object.entries(condition)) {
         if (op in operatorMap) {
-          parsedCondition.operator = operatorMap[op];
-          parsedCondition.value = value;
-          break;
+          parsedConditions.push({
+            operator: operatorMap[op],
+            value: value,
+          });
         }
       }
 
-      structuredQuery[field] = parsedCondition;
+      if (parsedConditions.length > 0) {
+        structuredQuery[field] = parsedConditions;
+      } else {
+        structuredQuery[field] = {
+          operator: Operator.EQ,
+          value: condition,
+        };
+      }
     } else {
       structuredQuery[field] = {
         operator: Operator.EQ,
@@ -66,47 +72,47 @@ function parseQuery(query) {
   return structuredQuery;
 }
 
-function evaluateCondition(doc, field, condition) {
-  const docValue = doc[field];
+function operatorToTagCondition(field, condition, storageInstance) {
+  const operator = operatorToTagOperator[condition.operator];
 
-  // Handle cases where the field doesn't exist in the document
-  if (docValue === undefined) {
-    return false;
+  if (!operator) {
+    // Operator not supported for tag queries
+    return null;
   }
 
-  let docValueToCompare = docValue;
-  let conditionValueToCompare = condition.value;
+  // Use storageInstance.encodeTagValueForField to ensure consistent encoding/hashing
+  const encodeValue = (val) => {
+    return storageInstance.encodeTagValueForField(field, val);
+  };
 
-  // Check if docValue is an ISO date string
-  if (isISODateString(docValue)) {
-    // Convert docValue to timestamp
-    docValueToCompare = new Date(docValue).getTime();
+  // Escape value for SQL expression
+  const escapeValue = (val) => {
+    return `'${val.replace(/'/g, "''")}'`;
+  };
 
-    // Handle condition values for different operators
-    if (Array.isArray(conditionValueToCompare)) {
-      conditionValueToCompare = conditionValueToCompare.map((value) => {
-        return isISODateString(value) ? new Date(value).getTime() : value;
-      });
-    } else {
-      if (isISODateString(conditionValueToCompare)) {
-        conditionValueToCompare = new Date(conditionValueToCompare).getTime();
-      }
+  let value = condition.value;
+
+  if (condition.operator === Operator.IN) {
+    if (!Array.isArray(value)) {
+      return null;
     }
+    const values = value
+      .map((val) => escapeValue(encodeValue(val)))
+      .join(', ');
+    return `\"${field}\" IN (${values})`;
+  } else if (condition.operator === Operator.BETWEEN) {
+    if (!Array.isArray(value) || value.length !== 2) {
+      return null;
+    }
+    const [start, end] = value.map((val) => escapeValue(encodeValue(val)));
+    return `\"${field}\" BETWEEN ${start} AND ${end}`;
+  } else {
+    return `\"${field}\" ${operator} ${escapeValue(encodeValue(value))}`;
   }
-
-  const comparisonFunction = operatorFunctions[condition.operator];
-  return comparisonFunction(docValueToCompare, conditionValueToCompare);
-}
-
-
-// Helper function to check if a string is an ISO date string
-function isISODateString(value) {
-  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z$/.test(value);
 }
 
 module.exports = {
   Operator,
-  operatorFunctions,
   parseQuery,
-  evaluateCondition,
+  operatorToTagCondition,
 };

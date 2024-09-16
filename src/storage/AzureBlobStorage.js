@@ -388,7 +388,7 @@ class AzureBlobStorage {
       // If no query is provided or cannot be converted, list all blobs
       iterator = containerClient.listBlobsFlat();
     }
-  
+    
     const results = [];
     let skipped = 0;
     let batchBlobs = [];
@@ -397,7 +397,7 @@ class AzureBlobStorage {
       if (blob.name.startsWith('__')) {
         continue; // Skip system blobs
       }
-  
+    
       if (skipped < offset) {
         skipped++;
         continue;
@@ -405,11 +405,11 @@ class AzureBlobStorage {
   
       batchBlobs.push(blob.name);
   
-      if (batchBlobs.length === batchSize || iterator.isDone) {
+      if (batchBlobs.length === batchSize) {
         const batchDocs = await Promise.all(
           batchBlobs.map(blobName => this.read(collection, blobName))
         );
-        
+
         results.push(...batchDocs.filter(doc => doc !== null));
         batchBlobs = [];
   
@@ -420,6 +420,17 @@ class AzureBlobStorage {
       }
     }
   
+    // Process any remaining blobs in the last batch
+    if (batchBlobs.length > 0) {
+      const batchDocs = await Promise.all(
+        batchBlobs.map(blobName => this.read(collection, blobName))
+      );
+      results.push(...batchDocs.filter(doc => doc !== null));
+      if (results.length > limit) {
+        results.length = limit; // Trim excess results
+      }
+    }
+
     return results;
   }
 
